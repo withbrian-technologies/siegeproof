@@ -13,6 +13,7 @@ import (
 
 	"github.com/withbrian-technologies/siegeproof/internal/config"
 	"github.com/withbrian-technologies/siegeproof/internal/mcp"
+	"github.com/withbrian-technologies/siegeproof/internal/report"
 )
 
 var version = "0.1.0-dev"
@@ -43,6 +44,8 @@ func main() {
 		err = configCommand(args[1:], jsonOutput)
 	case "discover":
 		err = discoverCommand(args[1:], jsonOutput)
+	case "report":
+		err = reportCommand(args[1:], jsonOutput)
 	default:
 		err = fmt.Errorf("unknown command %q", args[0])
 	}
@@ -107,6 +110,7 @@ func discoverCommand(args []string, asJSON bool) error {
 	fs := flag.NewFlagSet("discover", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	path := fs.String("config", "", "path to YAML configuration")
+	reportPath := fs.String("report", "", "path to discovery report")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -132,12 +136,51 @@ func discoverCommand(args []string, asJSON bool) error {
 	if err != nil {
 		return err
 	}
+	if *reportPath == "" {
+		*reportPath = cfg.ReportPath
+	}
+	discoveryReport := report.New(result, cfg.Target.Transport, version, time.Now().UTC())
+	if err := report.WriteAtomic(*reportPath, discoveryReport); err != nil {
+		return err
+	}
 	if asJSON {
-		return json.NewEncoder(os.Stdout).Encode(result)
+		return json.NewEncoder(os.Stdout).Encode(struct {
+			OK     bool          `json:"ok"`
+			Report string        `json:"report"`
+			Result report.Report `json:"result"`
+		}{OK: true, Report: *reportPath, Result: discoveryReport})
 	}
 	fmt.Printf("server %s %s · %d tools, %d resources, %d prompts\n",
 		result.ServerInfo.Name, result.ServerInfo.Version,
 		len(result.Tools), len(result.Resources), len(result.Prompts))
+	return nil
+}
+
+func reportCommand(args []string, asJSON bool) error {
+	if len(args) == 0 || args[0] != "validate" {
+		return errors.New("usage: report validate --path PATH")
+	}
+	fs := flag.NewFlagSet("report validate", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	path := fs.String("path", "", "path to discovery report")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if *path == "" {
+		return errors.New("--path is required")
+	}
+	result, err := report.ValidateFile(*path)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return json.NewEncoder(os.Stdout).Encode(struct {
+			OK     bool   `json:"ok"`
+			Path   string `json:"path"`
+			Schema string `json:"schema"`
+		}{OK: true, Path: *path, Schema: result.Schema})
+	}
+	fmt.Printf("valid discovery report: %s (%s)\n", *path, result.Schema)
 	return nil
 }
 
@@ -147,5 +190,5 @@ func commandExists(name string) bool {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: siegeproof [--json] version|doctor|config validate --config PATH|discover --config PATH")
+	fmt.Fprintln(os.Stderr, "usage: siegeproof [--json] version|doctor|config validate --config PATH|discover --config PATH [--report PATH]|report validate --path PATH")
 }

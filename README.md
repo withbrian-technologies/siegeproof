@@ -92,7 +92,12 @@ Open-source dynamic fuzzers for MCP already exist, notably `mcp-fuzzer` (protoco
 
 **Phase 1 discovery only.** The current release can safely start an explicitly
 configured stdio command and enumerate MCP server metadata with
-`discover --config PATH` (add `--json` for stable machine-readable output).
+`discover --config PATH` (add `--json` for stable machine-readable output) now
+writes a deterministic `siegeproof.discovery/v1` JSON artifact. The report
+contains bounded server metadata, sorted tools/resources/prompts, counts, and
+completion state; it never includes the target command, environment, or target
+stderr. Use `report validate --path PATH` to validate an artifact without
+contacting the target.
 It sends only initialize and list requests; it does not call tools, mutate
 inputs, fuzz, exploit, use HTTP/SSE, score, or generate findings. Network
 transports are explicitly rejected by discovery. `version`, `doctor`, and
@@ -114,33 +119,57 @@ These decisions shape everything below. They are what make the tool safe to put 
 ## How It Works
 
 ```
-┌──────────────────┐     ┌───────────────────┐     ┌────────────────────┐
-│  MCP Client       │────▶│  Introspection     │────▶│  Payload/Mutation   │
-│  (stdio/SSE/HTTP) │     │  Engine (schema    │     │  Engine             │
-│                   │     │  normalization)    │     │                     │
-└──────────────────┘     └───────────────────┘     └──────────┬─────────┘
-                                                                │
-                                                                ▼
-┌──────────────────┐     ┌───────────────────┐     ┌────────────────────┐
-│  Hardened Policy  │◀────│  Scoring &         │◀────│  Execution          │
-│  Generator        │     │  Verdict Engine    │     │  Orchestrator       │
-│                   │     │                    │     │  (sandboxed)        │
-└────────┬─────────┘     └─────────┬─────────┘     └────────────────────┘
-         │                          │
-         ▼                          ▼
-  siegeproof.hardened.yaml    SARIF / JSON report
+  IMPLEMENTED: Phase 1 safe stdio discovery
+
+  siegeproof CLI
+       |
+       |  bounded JSON-RPC initialize + list requests
+       v
+  +------------------------+       TRUST BOUNDARY       +----------------------+
+  | Bounded MCP stdio      |---------------------------->| Explicitly configured |
+  | discovery client       |   stdin/stdout only         | target process        |
+  | - target stderr: drop  |<----------------------------| (untrusted output)    |
+  | - timeout/size caps    |       framed responses     +----------------------+
+  | - no tool calls        |
+  +-----------+------------+
+              |
+              | normalize, cap, and sort metadata
+              v
+  +------------------------+       atomic write        +----------------------+
+  | Discovery result       |--------------------------->| Bounded report file  |
+  | tools/resources/       |                            | siegeproof.discovery |
+  | prompts + counts      |                            | /v1, complete=true  |
+  +------------------------+                            | no secrets          |
+                                                        +----------+-----------+
+                                                                    |
+                                                                    v
+                                                        report validate --path
+                                                        (offline schema check)
+
+  DEFERRED: not part of the current safe discovery path
+
+  [payload generation] --> [tool execution/fuzzing] --> [verdicts/scoring]
+                                                    --> [hardening policy]
 ```
+
+The trust boundary treats the configured target as hostile: discovery sends
+only protocol initialization and enumeration requests, discards target
+stderr, and bounds response fields before writing a deterministic report.
+Execution, fuzzing, scoring, and hardening remain planned stages and are not
+performed by the current CLI.
 
 **Scan lifecycle**
 
-1. **Preflight.** Validate config, check the scope allowlist, verify the sandbox is available, start the canary infrastructure.
-2. **Connect and introspect.** Enumerate tools, resources, and prompts; normalize their schemas.
-3. **Plan.** Build a payload plan per tool from its declared schema, bounded by the intensity level and budget.
-4. **Execute.** Run payloads concurrently, rate-limited, inside the sandbox. Stateful chains carry session state across calls.
-5. **Judge.** The deterministic verdict engine classifies each response. Optional probabilistic checks run last and are labeled.
-6. **Score.** Deduplicate findings, apply weights and caps, compute coverage.
-7. **Report.** Write JSON and SARIF, including replayable evidence.
-8. **Harden.** (Separate command.) Turn findings into a policy, then re-scan through the policy to verify.
+1. **Current — validate and discover.** Validate the configuration, require
+   explicit authorization, start only a configured stdio command, and
+   enumerate tools, resources, and prompts with bounded JSON-RPC exchanges.
+2. **Current — report.** Normalize and sort metadata, then atomically write a
+   deterministic `siegeproof.discovery/v1` report. `report validate` checks the
+   artifact without contacting the target.
+3. **Deferred — plan and execute.** Payload generation, tool calls, mutation,
+   fuzzing, sandbox orchestration, and stateful chains are not implemented.
+4. **Deferred — judge, score, and harden.** Finding verdicts, compliance
+   scoring, SARIF output, and hardened policy generation are planned stages.
 
 ## Threat Model and Scope
 
@@ -196,7 +225,7 @@ sha256sum --check checksums.txt --ignore-missing
 
 cosign verify-blob \
   --bundle siegeproof_linux_amd64.tar.gz.sigstore.json \
-  --certificate-identity-regexp 'https://github.com/YOUR_ORG/siegeproof/.*' \
+  --certificate-identity-regexp 'https://github.com/withbrian-technologies/siegeproof/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   siegeproof_linux_amd64.tar.gz
 ```
@@ -225,6 +254,8 @@ To discover a local stdio server:
 ```bash
 siegeproof discover --config siegeproof.yaml
 siegeproof --json discover --config siegeproof.yaml
+siegeproof discover --config siegeproof.yaml --report reports/discovery.json
+siegeproof report validate --path reports/discovery.json
 ```
 
 ## Quick Start
@@ -255,7 +286,9 @@ report_path: reports/report.json
 Network transports use `target.url` and require at least one `allow_hosts` entry.
 Supported transports are `stdio`, `http`, and `sse`; intensity is `low`, `medium`,
 or `high`; sandbox is `none`, `bwrap`, or `docker`. All defaults are conservative.
-Exploit payloads, live fuzzing, scanning, and report generation are not implemented.
+Exploit payloads, live fuzzing, and scanning are not implemented. Discovery
+reports are written atomically; report output paths must be relative and their
+parent directories must already exist.
 
 ---
 
@@ -660,7 +693,7 @@ services:
     networks: [scan-net]
     environment: { POSTGRES_USER: scanner, POSTGRES_PASSWORD: scanner, POSTGRES_DB: scratch }
   siegeproof:
-    image: ghcr.io/YOUR_ORG/siegeproof@sha256:<digest>
+    image: ghcr.io/withbrian-technologies/siegeproof@sha256:<digest>
     networks: [scan-net]
     depends_on: [target]
     command: ["scan", "--endpoint", "http://target:8080/mcp", "--wait", "60s",
@@ -694,7 +727,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: siegeproof
-          image: ghcr.io/YOUR_ORG/siegeproof@sha256:<digest>
+          image: ghcr.io/withbrian-technologies/siegeproof@sha256:<digest>
           args: ["scan", "--config", "/etc/siegeproof/siegeproof.yaml", "--report", "-"]
           securityContext:
             allowPrivilegeEscalation: false
