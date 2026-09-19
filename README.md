@@ -90,11 +90,13 @@ Open-source dynamic fuzzers for MCP already exist, notably `mcp-fuzzer` (protoco
 
 ## Status
 
-**Phase 0/1 foundation only.** The current release is deliberately safe and does not
-connect to targets, run commands, send payloads, fuzz, score, or generate findings.
-Implemented commands are `version`, `doctor`, and `config validate --config PATH`.
-`doctor` reports local runtime capabilities only. See `CHANGELOG.md` for the
-implemented-versus-planned boundary.
+**Phase 1 discovery only.** The current release can safely start an explicitly
+configured stdio command and enumerate MCP server metadata with
+`discover --config PATH` (add `--json` for stable machine-readable output).
+It sends only initialize and list requests; it does not call tools, mutate
+inputs, fuzz, exploit, use HTTP/SSE, score, or generate findings. Network
+transports are explicitly rejected by discovery. `version`, `doctor`, and
+`config validate --config PATH` remain available.
 
 ## Design Principles
 
@@ -210,13 +212,20 @@ go build -trimpath -o siegeproof ./cmd/siegeproof
 
 | | Support |
 |---|---|
-| Transports | stdio, streamable HTTP, SSE (kept for older servers) |
+| Transports | stdio discovery only (HTTP/SSE not implemented) |
 | MCP spec revisions | Matrix published after Phase 0; tracked in `docs/spec-coverage.md` |
 | Sandbox modes | `docker` (Linux/macOS/Windows), `bwrap` (Linux), `none` |
 | Windows | Binary supported; use `docker` sandbox mode for stdio targets |
 
 Run `siegeproof doctor` after installing to inspect local Go/runtime, OS/architecture,
 and whether `docker` or `bwrap` are available. It never contacts a network or runs a target.
+
+To discover a local stdio server:
+
+```bash
+siegeproof discover --config siegeproof.yaml
+siegeproof --json discover --config siegeproof.yaml
+```
 
 ## Quick Start
 

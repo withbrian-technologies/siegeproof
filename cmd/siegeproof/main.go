@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -8,8 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"time"
 
 	"github.com/withbrian-technologies/siegeproof/internal/config"
+	"github.com/withbrian-technologies/siegeproof/internal/mcp"
 )
 
 var version = "0.1.0-dev"
@@ -38,6 +41,8 @@ func main() {
 		err = printDoctor(jsonOutput)
 	case "config":
 		err = configCommand(args[1:], jsonOutput)
+	case "discover":
+		err = discoverCommand(args[1:], jsonOutput)
 	default:
 		err = fmt.Errorf("unknown command %q", args[0])
 	}
@@ -98,11 +103,49 @@ func configCommand(args []string, asJSON bool) error {
 	return nil
 }
 
+func discoverCommand(args []string, asJSON bool) error {
+	fs := flag.NewFlagSet("discover", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	path := fs.String("config", "", "path to YAML configuration")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *path == "" {
+		return errors.New("--config is required")
+	}
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	if cfg.Target.Transport != "stdio" {
+		return fmt.Errorf("discover supports only stdio transport; %s is unsupported", cfg.Target.Transport)
+	}
+	timeout, err := time.ParseDuration(cfg.Budgets.Timeout)
+	if err != nil {
+		return errors.New("invalid configured timeout")
+	}
+	client, err := mcp.NewClient(mcp.Config{Command: cfg.Target.Command, Timeout: timeout})
+	if err != nil {
+		return err
+	}
+	result, err := client.Discover(context.Background())
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
+	fmt.Printf("server %s %s · %d tools, %d resources, %d prompts\n",
+		result.ServerInfo.Name, result.ServerInfo.Version,
+		len(result.Tools), len(result.Resources), len(result.Prompts))
+	return nil
+}
+
 func commandExists(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: siegeproof [--json] version|doctor|config validate --config PATH")
+	fmt.Fprintln(os.Stderr, "usage: siegeproof [--json] version|doctor|config validate --config PATH|discover --config PATH")
 }
