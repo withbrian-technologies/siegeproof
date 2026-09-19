@@ -1,0 +1,6 @@
+/siegeproof
+/bin/
+/dist/
+/reports/
+*.test
+*.out

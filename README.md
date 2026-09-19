@@ -90,11 +90,11 @@ Open-source dynamic fuzzers for MCP already exist, notably `mcp-fuzzer` (protoco
 
 ## Status
 
-Early-stage, solo-built, pre-release. Check `CHANGELOG.md` (once it exists) for what is actually implemented versus planned. Caveats that apply from day one:
-
-- **Only test servers you own or are explicitly authorized to assess.** Fuzzing is not implicit consent.
-- **Deterministic findings** (crashes, error leakage, auth bypass, canary reads) are reliable from the start. **LLM-judged findings** (subtle cross-tool contamination) are probabilistic and labeled as such in every report.
-- **The hardened-policy generator ships after the scoring engine** (Phase 5). It is not in the MVP.
+**Phase 0/1 foundation only.** The current release is deliberately safe and does not
+connect to targets, run commands, send payloads, fuzz, score, or generate findings.
+Implemented commands are `version`, `doctor`, and `config validate --config PATH`.
+`doctor` reports local runtime capabilities only. See `CHANGELOG.md` for the
+implemented-versus-planned boundary.
 
 ## Design Principles
 
@@ -185,18 +185,7 @@ Siegeproof plays the role of a **hostile or manipulated caller**: an attacker, o
 
 ## Installation
 
-> Distribution channels below are the **target**; they go live as releases are published.
-
-```bash
-# Homebrew
-brew install withbrian-technologies/tap/siegeproof
-
-# Go
-go install github.com/withbrian-technologies/siegeproof/cmd/siegeproof@latest
-
-# Docker (pin by digest in CI; never use :latest in a gate)
-docker pull ghcr.io/withbrian-technologies/siegeproof@sha256:<digest>
-```
+Phase 0/1 is built from source with Go 1.22 or newer:
 
 **Prebuilt binaries** for Linux, macOS, and Windows (amd64/arm64) are attached to each GitHub release, built by `goreleaser`, with checksums, an SBOM, and keyless signatures. Verify before you run them in CI:
 
@@ -226,28 +215,38 @@ go build -trimpath -o siegeproof ./cmd/siegeproof
 | Sandbox modes | `docker` (Linux/macOS/Windows), `bwrap` (Linux), `none` |
 | Windows | Binary supported; use `docker` sandbox mode for stdio targets |
 
-Run `siegeproof doctor` after installing to check sandbox availability, canary-listener port binding, and DNS/egress behavior.
+Run `siegeproof doctor` after installing to inspect local Go/runtime, OS/architecture,
+and whether `docker` or `bwrap` are available. It never contacts a network or runs a target.
 
 ## Quick Start
 
 ```bash
-# 1. Discover the target's attack surface (read-only, sends no payloads)
-siegeproof discover --stdio "python my_server.py"
-
-# 2. Run a baseline fuzz pass
-siegeproof scan --stdio "python my_server.py" --intensity medium --report reports/scan.json
-
-# 3. Gate CI: fail if the compliance score drops below 80
-siegeproof scan --endpoint https://staging.example.com/mcp --min-score 80 --format sarif
-
-# 4. Generate a hardened policy from the last scan
-siegeproof harden --from reports/scan.json --out siegeproof.hardened.yaml
-
-# 5. Re-scan through the policy to verify the fixes hold
-siegeproof harden --from reports/scan.json --out siegeproof.hardened.yaml --verify
+go build -trimpath -o siegeproof.exe ./cmd/siegeproof
+.\siegeproof.exe version
+.\siegeproof.exe doctor
+.\siegeproof.exe config validate --config siegeproof.yaml
 ```
 
-For anything beyond a first look, use a config file and read the [Production Guide](#production-guide).
+Example safe validation configuration (validation does not execute the target):
+
+```yaml
+acknowledge_authorization: true
+target:
+  transport: stdio
+  command: ["python", "server.py"]
+intensity: low
+allow_hosts: []
+sandbox: none
+budgets:
+  max_requests: 100
+  timeout: 30s
+report_path: reports/report.json
+```
+
+Network transports use `target.url` and require at least one `allow_hosts` entry.
+Supported transports are `stdio`, `http`, and `sse`; intensity is `low`, `medium`,
+or `high`; sandbox is `none`, `bwrap`, or `docker`. All defaults are conservative.
+Exploit payloads, live fuzzing, scanning, and report generation are not implemented.
 
 ---
 
